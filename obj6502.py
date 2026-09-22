@@ -30,8 +30,13 @@ class AddressingBehavior(Enum):
     FORCE_ZPG = 2
     FORCE_FULL = 3
 
+class AddressType(Enum):
+    U16 = 1
+    U8 = 2
+    S8 = 3
+
 class LabelExpression:
-    def __init__(self, is_16_bit: bool, line_num: int, no_labels = False: bool):
+    def __init__(self, addr_type: AddressType, line_num: int, no_labels = False: bool):
         """ Initialize an expression with either 8 or 16 bits. """
         # Each term consists of:
         # - the sign (True if positive, False if negative)
@@ -40,7 +45,7 @@ class LabelExpression:
         #   - a number
         # The expression can only consist of addition and subtraction;
         # all terms are added together.
-        self.is_16_bit = is_16_bit
+        self.addr_type = is_16_bit
         self.line_num = line_num
         self.no_labels = no_labels
         self.unresolved_labels: list[tuple[str, int]] = []
@@ -100,14 +105,26 @@ class LabelExpression:
             if lbl not in label_addrs:
                 raise Exception(f"Error: Ln {self.line_num}: Unknown label \"{lbl}\"")
             self.offset += sgn * label_addrs[lbl]
-        self.offset %= 0x10000 if self.is_16_bit else 0x100
-        return self.offset.to_bytes(2 if self.is_16_bit else 1, byte_order="little", signed=False)
+        self.convert_offset()
+        return self.offset.to_bytes(2 if self.addr_type == AddressType.U16 else 1, byte_order="little", signed=self.addr_type == AddressType.S8)
 
     def resolve_immediately(self) -> bytes | None:
         if len(self.unresolved_labels) > 0:
             return None # Cannot be resolved right now
-        self.offset %= 0x10000 if self.is_16_bit else 0x100
-        return self.offset.to_bytes(2 if self.is_16_bit else 1, byte_order="little", signed=False)
+        self.convert_offset()
+        return self.offset.to_bytes(2 if self.addr_type == AddressType.U16 else 1, byte_order="little", signed=self.addr_type == AddressType.S8)
+
+    def convert_offset(self) -> None:
+        match self.addr_type:
+            case AddressType.U16:
+                self.offset %= 0x10000
+            case AddressType.U8:
+                self.offset %= 0x100
+            case AddressType.S8:
+                if self.offset not in range(-128, 128):
+                    raise Exception(f"Error: Ln {self.line_num}: Relative value exceeds range [-128, 127]")
+            case _:
+                raise Exception(f"ASSERT Error: Ln {self.line_num}: LabelExpression type not set correctly")
 
 
 class ObjectCode:
@@ -261,6 +278,89 @@ def parse_instruction(line_num: int, line: str, objcode: ObjectCode) -> None:
         parse_addressing_0bXXXRRR00(line_num, line[3:].strip(), objcode)
         return
 
+    # Attempt to match opcodes of form 0bXXXXX000 <impl>
+    match opcode:
+        case "brk":
+            v[0] = b"\x00"
+            return
+        case "rti":
+            v[0] = b"\x40"
+            return
+        case "rts":
+            v[0] = b"\x60"
+            return
+        case "php":
+            v[0] = b"\x08"
+            return
+        case "clc":
+            v[0] = b"\x18"
+            return
+        case "plp":
+            v[0] = b"\x28"
+            return
+        case "sec":
+            v[0] = b"\x38"
+            return
+        case "pha":
+            v[0] = b"\x48"
+            return
+        case "cli":
+            v[0] = b"\x58"
+            return
+        case "pla":
+            v[0] = b"\x68"
+            return
+        case "sei":
+            v[0] = b"\x78"
+            return
+        case "dey":
+            v[0] = b"\x88"
+            return
+        case "tya":
+            v[0] = b"\x98"
+            return
+        case "tay":
+            v[0] = b"\xa8"
+            return
+        case "clv":
+            v[0] = b"\xb8"
+            return
+        case "iny":
+            v[0] = b"\xc8"
+            return
+        case "cld":
+            v[0] = b"\xd8"
+            return
+        case "inx":
+            v[0] = b"\xe8"
+            return
+        case "sed":
+            v[0] = b"\xf8"
+            return
+
+    # Attempt to match opcodes of form 0bXXX10000
+    form_0bXXX10000_idx = -1
+    match opcode:
+        case "bpl":
+            form_0bXXX10000_idx = 0
+        case "bmi":
+            form_0bXXX10000_idx = 1
+        case "bvc":
+            form_0bXXX10000_idx = 2
+        case "bvs":
+            form_0bXXX10000_idx = 3
+        case "bcc":
+            form_0bXXX10000_idx = 4
+        case "bcs":
+            form_0bXXX10000_idx = 5
+        case "bne":
+            form_0bXXX10000_idx = 6
+        case "beq":
+            form_0bXXX10000_idx = 7
+    if form_0bXXX10000_idx != -1:
+        v[0] |= (form_0bXXX10000_idx << 5) | 16
+        parse_addressing_0bXXX10000(line_num, line[3:].strip(), objcode)
+        return
 
 def parse_16_bit_address(line_num: int, text: str) -> LabelExpression:
     """ Parse a 16-bit address. Returns a LabelExpression which may or may not be resolvable immediately. """
@@ -320,7 +420,7 @@ def parse_addressing_0bXXXRRR01(line_num: int, text: str, objcode: ObjectCode) -
         v[0] |= 0b000_010_00
         if v[0] == b"\x89": # $89 ("STA #") is the one illegal opcode in the 0bXXXRRR01 group
             raise Exception(f"Error: Ln {line_num}: STA #<immediate> (opcode $89) is not supported")
-        lblexpr = LabelExpression(is_16_bit=False, line_num, no_labels=True)
+        lblexpr = LabelExpression(addr_type=AddressType.U8, line_num, no_labels=True)
         lblexpr.parse(imm_text)
         resolve_label_expression(line_num, lblexpr, objcode)
     else: # zero age and absolute addressing modes
@@ -336,7 +436,7 @@ def parse_addressing_0bXXXRRR01(line_num: int, text: str, objcode: ObjectCode) -
             addr_behavior = AddressingBehavior.FORCE_ZPG
             addr_text = addr_text[1:]
 
-        lblexpr = LabelExpression(is_16_bit=True, line_num)
+        lblexpr = LabelExpression(addr_type=AddressType.U16, line_num)
         lblexpr.parse(addr_text)
         resolve_label_expression(line_num, lblexpr, objcode, compact_to_zpg=addr_behavior)
 
@@ -381,7 +481,7 @@ def form_0bXXXRRR10_idx(line_num: int, text: str, objcode: ObjectCode) -> None:
             addr_behavior = AddressingBehavior.FORCE_ZPG
             addr_text = addr_text[1:]
 
-        lblexpr = LabelExpression(is_16_bit=True, line_num)
+        lblexpr = LabelExpression(addr_type=AddressType.U16, line_num)
         lblexpr.parse(addr_text)
         resolve_label_expression(line_num, lblexpr, objcode, compact_to_zpg=addr_behavior)
 
@@ -433,7 +533,7 @@ def parse_addressing_0bXXXRRR00(line_num: int, text: str, objcode: ObjectCode) -
         if len(imm_text) == 0:
             raise Exception(f"Error: Ln {line_num}: Immediate value not specified")
         #v[0] |= 0b000_000_00 # Not necessary
-        lblexpr = LabelExpression(is_16_bit=False, line_num, no_labels=True)
+        lblexpr = LabelExpression(addr_type=AddressType.U8, line_num, no_labels=True)
         lblexpr.parse(imm_text)
         resolve_label_expression(line_num, lblexpr, objcode)
     else: # zero age and absolute addressing modes
@@ -449,7 +549,7 @@ def parse_addressing_0bXXXRRR00(line_num: int, text: str, objcode: ObjectCode) -
             addr_behavior = AddressingBehavior.FORCE_ZPG
             addr_text = addr_text[1:]
 
-        lblexpr = LabelExpression(is_16_bit=True, line_num)
+        lblexpr = LabelExpression(addr_type=AddressType.U16, line_num)
         lblexpr.parse(addr_text)
         resolve_label_expression(line_num, lblexpr, objcode, compact_to_zpg=addr_behavior)
 
@@ -474,6 +574,12 @@ def parse_addressing_0bXXXRRR00(line_num: int, text: str, objcode: ObjectCode) -
             raise Exception(f"Error: Ln {line_num}: Invalid zero-page/absolute addressing syntax")
 
 
+def parse_addressing_0bXXX10000(line_num: int, text: str, objcode: ObjectCode) -> None:
+    if len(text) == 0:
+        raise Exception(f"Error: Ln {line_num}: Opcode requires argument")
+    lblexpr = LabelExpression(addr_type=AddressType.S8, line_num)
+    lblexpr.parse(addr_text)
+    resolve_label_expression(line_num, lblexpr, objcode)
 
 if __name__ == "__main__":
     main()
