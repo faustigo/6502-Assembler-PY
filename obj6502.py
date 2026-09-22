@@ -122,7 +122,6 @@ def main():
     # TODO other handling including help screen
     if len(sys.argv) < 2:
         raise Exception(f"Error: Must specify file to assemble")
-    path = Path(sys.argv[1])
     assemble_obj_from_file(path)
 
 def assemble_obj_from_file(path: Path) -> ObjectCode:
@@ -176,24 +175,47 @@ def parse_instruction(line_num: int, line: str, objcode: ObjectCode) -> None:
     form_0bXXXRRR01_idx = -1
     match opcode:
         case "ora":
-            idx = 0
+            form_0bXXXRRR01_idx = 0
         case "and":
-            idx = 1
+            form_0bXXXRRR01_idx = 1
         case "eor":
-            idx = 2
+            form_0bXXXRRR01_idx = 2
         case "adc":
-            idx = 3
+            form_0bXXXRRR01_idx = 3
         case "sta":
-            idx = 4
+            form_0bXXXRRR01_idx = 4
         case "lda":
-            idx = 5
+            form_0bXXXRRR01_idx = 5
         case "cmp":
-            idx = 6
+            form_0bXXXRRR01_idx = 6
         case "sbc":
-            idx = 7
+            form_0bXXXRRR01_idx = 7
     if form_0bXXXRRR01_idx != -1:
-        v[0] |= (idx << 5) | 1 # XXX bits
+        v[0] |= (form_0bXXXRRR01_idx << 5) | 1 # XXX bits
         parse_addressing_0bXXXRRR01(line_num, line[3:].strip(), v, objcode)    
+
+    # Attempt to match opcodes of form 0bXXXRRR10 (excluding transfers, DEX, and NOP)
+    form_0bXXXRRR10_idx = -1
+    match opcode:
+        case "asl":
+            form_0bXXXRRR10_idx = 0
+        case "rol":
+            form_0bXXXRRR10_idx = 1
+        case "lsr":
+            form_0bXXXRRR10_idx = 2
+        case "ror":
+            form_0bXXXRRR10_idx = 3
+        case "stx":
+            form_0bXXXRRR10_idx = 4
+        case "ldx":
+            form_0bXXXRRR10_idx = 5
+        case "dec":
+            form_0bXXXRRR10_idx = 6
+        case "inc":
+            form_0bXXXRRR10_idx = 7
+    if form_0bXXXRRR10_idx != -1:
+        v[0] |= (form_0bXXXRRR10_idx << 5) | 2 # XXX bits 
+        parse_addressing_0bXXXRRR10(line_num, line[3:].strip(), v, objcode)    
 
 
 def parse_16_bit_address(line_num: int, text: str) -> LabelExpression:
@@ -230,54 +252,58 @@ def parse_addressing_0bXXXRRR01(line_num: int, text: str, objcode: ObjectCode) -
     v = objcode.bytes[-1]
  
     # TODO looser syntax for indexed addressing
-    if line[0] == '(': # Indirect addressing modes
-        if len(line) >= 4 and line[-3:] == ",X)": # {X-indexed, indirect}; form OPC (<addr8>,X); RRR = 0b000
-            addr_line = line[1:-3].strip()
-            if len(addr_line) == 0:
+    if text[0] == '(': # Indirect addressing modes
+        if len(text) >= 4 and text[-3:].lower() == ",x)": # {X-indexed, indirect}; form OPC (<addr8>,X); RRR = 0b000
+            addr_text = text[1:-3].strip()
+            if len(addr_text) == 0:
                 raise Exception(f"Error: Ln {line_num}: Invalid syntax for X-indexed, indirect operation; must be (<addr>,X)")-
             #v[0] |= 0b000_000_00 # Not necessary, kept for consistency
-            lblexpr = parse_8_bit_address(line_num, addr_line)
+            lblexpr = parse_8_bit_address(line_num, addr_text)
             resolve_label_expression(line_num, lblexpr, objcode)
-        elif len(line) >= 4 and line[-3:] == "),Y": # {Indirect, Y-indexed}; form OPC (<addr8>),Y; RRR = 0b001
-            addr_line = line[1:-3].strip()
-            if len(addr_line) == 0:
+        elif len(text) >= 4 and text[-3:].lower() == "),y": # {Indirect, Y-indexed}; form OPC (<addr8>),Y; RRR = 0b001
+            addr_text = text[1:-3].strip()
+            if len(addr_text) == 0:
                 raise Exception(f"Error: Ln {line_num}: Invalid syntax for indirect, Y-indexed operation; must be (<addr>),Y")-
             v[0] |= 0b000_100_00
-            lblexpr = parse_8_bit_address(line_num, addr_line)
+            lblexpr = parse_8_bit_address(line_num, addr_text)
             resolve_label_expression(line_num, lblexpr, objcode)
         else:
             raise Exception(f"Error: Ln {line_num}: Invalid indirect addressing syntax")
-    elif line[0] == '#': # {Immediate}; form OPC #<imm8>; RRR = 0b010
-        imm_line = line[1:].strip()
-        if len(imm_line) == 0:
+    elif text[0] == '#': # {Immediate}; form OPC #<imm8>; RRR = 0b010
+        imm_text = text[1:].strip()
+        if len(imm_text) == 0:
             raise Exception(f"Error: Ln {line_num}: Immediate value not specified")
         v[0] |= 0b000_010_00
+        if v[0] == b"\x89": # $89 ("STA #") is the one illegal opcode in the 0bXXXRRR01 group
+            raise Exception(f"Error: Ln {line_num}: STA #<immediate> (opcode $89) is not supported")
         lblexpr = LabelExpression(is_16_bit=False, line_num, no_labels=True)
-        lblexpr.parse(imm_line)
+        lblexpr.parse(imm_text)
         resolve_label_expression(line_num, lblexpr, objcode)
-    else: # zero-page and absolute addressing modes
-        split_idx = line.find(',')
-        addr_line = line[:split_idx] if split_idx != -1 else line
+    else: # zero age and absolute addressing modes
+        split_idx = text.find(',')
+        addr_text = text[:split_idx] if split_idx != -1 else text
 
         # Adapted from NESASM
         addr_behavior = AddressingBehavior.COMPACT_TO_ZPG_IF_POSSIBLE
-        if addr_line[0] == ">":
+        if addr_text[0] == ">":
             addr_behavior = AddressingBehavior.FORCE_FULL
-            addr_line = addr_line[1:]
-        elif addr_line[0] == "<":
+            addr_text = addr_text[1:]
+        elif addr_text[0] == "<":
             addr_behavior = AddressingBehavior.FORCE_ZPG
-            addr_line = addr_line[1:]
+            addr_text = addr_text[1:]
 
+        lblexpr = LabelExpression(is_16_bit=True, line_num)
+        lblexpr.parse(addr_text)
         resolve_label_expression(line_num, lblexpr, objcode, compact_to_zpg=addr_behavior)
 
         is_zpg = len(v) == 2
         if len(v) == 1: # Unresolved, do not permute opcode
             pass
-        elif split_idx != -1: # No indexing
+        elif split_idx != -1: # No indexing; RRR = 0b001 if ZPG, 0b011 otherwise
             v[0] |= 0b000_001_00 if is_zpg else 0b000_011_00
-        elif line[split_idx:] == ",X": # X-indexed
+        elif text[split_idx:].lower() == ",x": # X-indexed; RRR = 0b101 if ZPG, 0b111 otherwise
             v[0] |= 0b000_101_00 if is_zpg else 0b000_111_00
-        elif line[split_idx:] == ",Y": # Y-indexed; NO ZPG OPTION
+        elif text[split_idx:].lower() == ",y": # Y-indexed; NO ZPG OPTION; RRR = 0b110
             if addr_behavior == FORCE_ZPG:
                 raise Exception(f"Error: Ln {line_num}: Cannot force zero-page addressing for instruction")
             if is_zpg: # Fix unforced ZPG
@@ -285,8 +311,53 @@ def parse_addressing_0bXXXRRR01(line_num: int, text: str, objcode: ObjectCode) -
             v[0] |= 0b000_110_00
         else:
             raise Exception(f"Error: Ln {line_num}: Invalid zero-page/absolute addressing syntax")
-    if v[0] == b"\x89": # $89 ("STA #") is the one illegal opcode in the 0bXXXRRR01 group
-        raise Exception(f"Error: Ln {line_num}: STA #<immediate> is not supported")
+
+
+def form_0bXXXRRR10_idx(line_num: int, text: str, objcode: ObjectCode) -> None:
+    if len(text) == 0:
+        raise Exception(f"Error: Ln {line_num}: Opcode requires argument")
+    v = objcode.bytes[-1]
+
+    if text.lower() == "a": # Accumulator; form OPC A; RRR = 0b010
+        mask = v[0] >> 5
+        if mask == 0b100 or mask == 0b110 or mask == 0b111: # STX, DEC, INC do not support immediate arguments; LDX does
+            raise Exception(f"Error: Ln {line_num}: Instruction does not support accumulator operation 'A'")
+        v[0] |= 0b000_010_00
+    else: # Zero page and absolute addressing
+        split_idx = text.find(',')
+        addr_text = text[:split_idx] if split_idx != -1 else text
+
+        # Adapted from NESASM
+        addr_behavior = AddressingBehavior.COMPACT_TO_ZPG_IF_POSSIBLE
+        if addr_text[0] == ">":
+            addr_behavior = AddressingBehavior.FORCE_FULL
+            addr_text = addr_text[1:]
+        elif addr_text[0] == "<":
+            addr_behavior = AddressingBehavior.FORCE_ZPG
+            addr_text = addr_text[1:]
+
+        lblexpr = LabelExpression(is_16_bit=True, line_num)
+        lblexpr.parse(addr_text)
+        resolve_label_expression(line_num, lblexpr, objcode, compact_to_zpg=addr_behavior)
+
+        is_zpg = len(v) == 2
+        if len(v) == 1: # Unresolved, do not permute opcode
+            pass
+        elif split_idx != -1: # No indexing; RRR = 0b001 if ZPG, 0b011 otherwise
+            v[0] |= 0b000_001_00 if is_zpg else 0b000_011_00
+        elif text[split_idx:].lower() == ",x": # X-indexed; RRR = 0b101 if ZPG, 0b111 otherwise
+            v[0] |= 0b000_101_00 if is_zpg else 0b000_111_00
+            if v[0] == b"\x96" or v[0] == b"\xb6" or v[0] == b"\x9e" or v[0] == b"\xbe":
+                raise Exception(f"Error: Ln {line_num}: Instruction does not support X-indexing")
+        elif text[split_idx:].lower() == ",y": # Y-indexed; RRR = 0b101 if ZPG, 0b111 otherwise
+            v[0] |= 0b000_101_00 if is_zpg else 0b000_111_00
+            if v[0] == b"\x9e":
+                raise Exception(f"Error: Ln {line_num}: STX <absolute>,Y (opcode $9E) is not supported")
+            if v[0] != b"\x96" and v[0] != b"\xb6" and v[0] != b"\xbe":
+                raise Exception(f"Error: Ln {line_num}: Instruction does not support Y-indexing")
+        else:
+            raise Exception(f"Error: Ln {line_num}: Invalid zero-page/absolute addressing syntax")
+        
 
 
 if __name__ == "__main__":
