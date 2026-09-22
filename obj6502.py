@@ -193,6 +193,7 @@ def parse_instruction(line_num: int, line: str, objcode: ObjectCode) -> None:
     if form_0bXXXRRR01_idx != -1:
         v[0] |= (form_0bXXXRRR01_idx << 5) | 1 # XXX bits
         parse_addressing_0bXXXRRR01(line_num, line[3:].strip(), v, objcode)    
+        return
 
     # Attempt to match opcodes of form 0bXXXRRR10 (excluding transfers, DEX, and NOP)
     form_0bXXXRRR10_idx = -1
@@ -216,6 +217,29 @@ def parse_instruction(line_num: int, line: str, objcode: ObjectCode) -> None:
     if form_0bXXXRRR10_idx != -1:
         v[0] |= (form_0bXXXRRR10_idx << 5) | 2 # XXX bits 
         parse_addressing_0bXXXRRR10(line_num, line[3:].strip(), v, objcode)    
+        return
+
+    # Attempt to match special opcodes of form 0bXXXRRR10 (transfers, DEX, NOP)
+    # Note: No separate parsing function since all opcodes below have no arguments
+    match opcode:
+        case "txa":
+            v[0] = b"\x8a"
+            return
+        case "txs":
+            v[0] = b"\x9a"
+            return
+        case "tax":
+            v[0] = b"\xaa"
+            return
+        case "tsx":
+            v[0] = b"\xba"
+            return
+        case "dex":
+            v[0] = b"\xca"
+            return
+        case "nop":
+            v[0] = b"\xea"
+            return
 
 
 def parse_16_bit_address(line_num: int, text: str) -> LabelExpression:
