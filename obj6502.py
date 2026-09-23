@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 from enum import Enum
 
+import utils6502
+
 """
 This file creates object files after parsing assembly files.
 """
@@ -52,6 +54,52 @@ class LabelExpression:
         self.unresolved_labels: list[tuple[str, int]] = []
         self.offset = 0
 
+    
+    def write_to_file(self, file) -> None:
+        file.write(self.addr_type.value.to_bytes(1))
+        utils6502.write_compressed_int(file, self.line_num)
+        file.write(self.no_labels.to_bytes(1))
+        
+        utils6502.write_compressed_int(file, len(self.unresolved_labels))
+        for lbl, term_sign in self.unresolved_labels:
+            utils6502.write_compressed_int(file, len(lbl))
+            file.write(lbl.encode("ascii"))
+            file.write(term_sign.to_bytes(1, signed=True))
+        
+        utils6502.write_compressed_int(file, self.offset, signed=True)
+
+    @staticmethod
+    def from_file(file) -> LabelExpression:
+        type_id = int.from_bytes(file.read(1))
+
+        addr_type = None
+        match type_id:
+            case AddressType.U16.value:
+                addr_type = AddressType.U16
+            case AddressType.U8.value:
+                addr_type = AddressType.U8
+            case AddressType.S8.value:
+                addr_type = AddressType.S8
+            case _:
+                raise Exception(f"Error: Invalid label expression type")
+
+        line_num = utils6502.read_compressed_int(file)
+
+        lblexpr = LabelExpression(addr_type, line_num)
+        lblexpr.no_bytes = bool(int.from_bytes(file.read(1)))
+
+        ul_sz = utils6502.read_compressed_int(file)
+        for _ in range(ul_sz):
+            lbl_sz = utils6502.read_compressed_int(file)
+            lbl = file.read(lbl_sz).decode("ascii")
+            term_sign = int.from_bytes(file.read(1), signed=True)
+            lblexpr.unresolved_labels.append((lbl, term_sign))
+
+        lblexpr.offset = utils6502.read_compressed_int(file, signed=True)
+
+        return lblexpr
+
+    
     def parse(self, text: str) -> None:
         if len(text) == 0:
             raise Exception(f"Error: Ln {self.line_num}: Empty address string")
@@ -137,22 +185,6 @@ class LabelExpression:
             case _:
                 raise Exception(f"ASSERT Error: Ln {self.line_num}: LabelExpression type not set correctly")
 
-    def write_to_file(self, file) -> None:
-        file.write(self.addr_type.value.to_bytes(1))
-        file.write(self.line_num.to_bytes(4, byteorder="little"))
-        file.write(self.no_labels.to_bytes(1))
-        
-        file.write((len(self.unresolved_labels)).to_bytes(4, byteorder="little"))
-        for lbl, term_sign in self.unresolved_labels:
-            file.write(lbl.encode("ascii"))
-            file.write(term_sign.to_bytes(4, byteorder="little"))
-        
-        file.write(self.offset.to_bytes(4, byteorder="little", signed=True))
-
-    @staticmethod
-    def from_file(file) -> LabelExpression:
-        # TODO read
-        return None
 
     def __repr__(self):
         s = "<"
@@ -169,10 +201,9 @@ class LabelExpression:
 
 
 class ObjectCode:
-    VERSION = 1
+    VERSION = 0x6502_0001
 
     def __init__(self):
-        # TODO offset?
         self.labels: dict[str, tuple[int, int]] = {} # (<LabelName>, (<obj offset>, <line_num>))
         self.offsets_to_resolve: dict[int, LabelExpression] = {} # (<obj offset>, <LabelExpression>)
         self.code_bytes: list[bytearray] = []
@@ -182,26 +213,53 @@ class ObjectCode:
         file.write(ObjectCode.VERSION.to_bytes(4, byteorder="little"))
         file.write(self.obj_offset.to_bytes(4, byteorder="little"))
 
-        file.write((len(self.labels)).to_bytes(4, byteorder="little"))
+        utils6502.write_compressed_int(file, len(self.labels))
         for lbl, (offset, line_num) in self.labels.items():
+            utils6502.write_compressed_int(file, len(lbl))
             file.write(lbl.encode("ascii"))
-            file.write(offset.to_bytes(4, byteorder="little"))
-            file.write(line_num.to_bytes(4, byteorder="little"))
+            utils6502.write_compressed_int(file, offset)
+            utils6502.write_compressed_int(file, line_num)
 
-        file.write((len(self.offsets_to_resolve)).to_bytes(4, byteorder="little"))
+        utils6502.write_compressed_int(file, len(self.offsets_to_resolve))
         for offset, lblexpr in self.offsets_to_resolve.items():
-            file.write(offset.to_bytes(4, byteorder="little"))
+            utils6502.write_compressed_int(file, offset)
             lblexpr.write_to_file(file)
 
-        file.write((len(self.code_bytes)).to_bytes(4, byteorder="little"))
+        utils6502.write_compressed_int(file, len(self.code_bytes))
         for ba in self.code_bytes:
-            file.write((len(ba)).to_bytes(4, byteorder="little"))
-            file.write(ba)
+            utils6502.write_compressed_int(file, len(ba))
+            file.write(ba)    
 
     @staticmethod
-    def from_file(file) -> ObjectCode:
-        # TODO
-        return None
+    def from_file(file, path: Path) -> ObjectCode:
+        file_VERSION = int.from_bytes(file.read(4), byteorder="little")
+        if file_VERSION != ObjectCode.VERSION:
+            print(f"Warning: file {path} has version {file_VERSION} differing from object file version {ObjectCode.VERSION}")
+        objcode = ObjectCode()
+        objcode.obj_offset = int.from_bytes(file.read(4), byteorder="little")
+        
+        labels_sz = utils6502.read_compressed_int(file)
+        for _ in range(labels_sz):
+            lbl_sz = utils6502.read_compressed_int(file)
+            lbl = file.read(lbl_sz).decode("ascii")
+            offset = utils6502.read_compressed_int(file)
+            line_num = utils6502.read_compressed_int(file)
+            objcode.labels[lbl] = (offset, line_num)
+
+        otr_sz = utils6502.read_compressed_int(file)
+        for _ in range(otr_sz):
+            offset = utils6502.read_compressed_int(file)
+            lblexpr = LabelExpression.from_file(file)
+            objcode.offsets_to_resolve[offset] = lblexpr
+
+        cb_sz = utils6502.read_compressed_int(file)
+        for _ in range(cb_sz):
+            ba_sz = utils6502.read_compressed_int(file)
+            ba = bytearray(file.read(ba_sz))
+            objcode.code_bytes.append(ba)
+
+        return objcode
+
 
 def main():
     # TODO other handling including help screen
