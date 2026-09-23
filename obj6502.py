@@ -58,48 +58,58 @@ class LabelExpression:
         tok = ""
         term_sign = 1
         term_sign_set = False
-        # Enforce numeric only for numbers, erroring if Python hexadecimal and binary values are included
-        STRICT_6502_LITERALS = True
+
         for c in text:
             if not c.isspace():
                 tok += c
                 continue
             if len(tok) == 0:
                 continue
+            term_sign, term_sign_set = self.interpret_tok(tok, term_sign, term_sign_set)
+            tok = ""
 
-            # Set sign and truncate
-            if tok[0] == '-':
-                if term_sign_set:
-                    raise Exception(f"Error: Ln {self.line_num}: Expected label or literal after sign")
-                term_sign_set = True
-                term_sign = -1
-                tok = tok[1:] 
-            elif tok[0] == '+':
-                if term_sign_set:
-                    raise Exception(f"Error: Ln {self.line_num}: Expected label or literal after sign")
-                term_sign_set = True
-                term_sign == 1
-                tok = tok[1:]
-            if len(tok) == 0:
-                continue
+        if len(tok) > 0:
+            self.interpret_tok(tok, term_sign, term_sign_set)
 
-            term_sign_set = False
-            if tok[0] == '$': # Hexadecimal
-                if STRICT_6502_LITERALS and len(tok) >= 2 and (tok[1] == 'x' or tok[1] == 'X'):
-                    raise Exception(f"Error: Ln {self.line_num}: Invalid literal {tok}")
-                self.offset += term_sign * int(tok, 16)
-            elif tok[0] == '%': # Binary
-                if STRICT_6502_LITERALS and len(tok) >= 2 and (tok[1] == 'b' or tok[1] == 'R'):
-                    raise Exception(f"Error: Ln {self.line_num}: Invalid literal {tok}")
-                self.offset += term_sign * int(tok, 2)
-            elif tok[0].isnumeric(): # Decimal
-                self.offset += term_sign * int(tok, 10)
-            else: # Label (should not be a macro)
-                if not valid_label(self.line_num, tok):
-                    raise Exception(f"Error: Ln {self.line_num}: Label \"{tok}\" contains invalid characters")
-                if self.no_labels:
-                    raise Exception(f"Error: Ln {self.line_num}: Labels not allowed in expression; found \"{tok}\"")
-                self.unresolved_labels.append((tok, term_sign))
+    def interpret_tok(self, tok: str, term_sign: int, term_sign_set: bool) -> tuple[int, bool]:
+        # Enforce numeric only for numbers, erroring if Python hexadecimal and binary values are included
+        STRICT_6502_LITERALS = True
+        # Set sign and truncate
+        if tok[0] == '-':
+            if term_sign_set:
+                raise Exception(f"Error: Ln {self.line_num}: Expected label or literal after sign")
+            term_sign = -1
+            tok = tok[1:] 
+            term_sign_set = True
+        elif tok[0] == '+':
+            if term_sign_set:
+                raise Exception(f"Error: Ln {self.line_num}: Expected label or literal after sign")
+            term_sign == 1
+            tok = tok[1:]
+            term_sign_set = True
+        if len(tok) == 0:
+            return term_sign, term_sign_set
+
+        if tok[0] == '$': # Hexadecimal
+            tok = tok[1:]
+            if STRICT_6502_LITERALS and len(tok) >= 2 and (tok[1] == 'x' or tok[1] == 'X'):
+                raise Exception(f"Error: Ln {self.line_num}: Invalid literal ${tok}")
+            self.offset += term_sign * int(tok, 16)
+        elif tok[0] == '%': # Binary
+            tok = tok[1:]
+            if STRICT_6502_LITERALS and len(tok) >= 2 and (tok[1] == 'b' or tok[1] == 'B'):
+                raise Exception(f"Error: Ln {self.line_num}: Invalid literal %{tok}")
+            self.offset += term_sign * int(tok, 2)
+        elif tok[0].isnumeric(): # Decimal
+            self.offset += term_sign * int(tok, 10)
+        else: # Label (should not be a macro)
+            if not valid_label(self.line_num, tok):
+                raise Exception(f"Error: Ln {self.line_num}: Label \"{tok}\" contains invalid characters")
+            if self.no_labels:
+                raise Exception(f"Error: Ln {self.line_num}: Labels not allowed in expression; found \"{tok}\"")
+            self.unresolved_labels.append((tok, term_sign))
+        return term_sign, False
+        
 
     def resolve(self, label_addrs: dict[str, int]) -> bytes:
         for lbl, sgn in self.unresolved_labels:
@@ -129,7 +139,7 @@ class LabelExpression:
 
     def __repr__(self):
         s = "<"
-        for i, (lbl, term_sign) in self.offsets_to_resolve:
+        for i, (lbl, term_sign) in enumerate(self.unresolved_labels):
             if i > 0 and term_sign == 1:
                 s += "+"
             elif term_sign == -1:
