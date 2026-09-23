@@ -137,6 +137,23 @@ class LabelExpression:
             case _:
                 raise Exception(f"ASSERT Error: Ln {self.line_num}: LabelExpression type not set correctly")
 
+    def write_to_file(self, file) -> None:
+        file.write(self.addr_type.value.to_bytes(1))
+        file.write(self.line_num.to_bytes(4, byteorder="little"))
+        file.write(self.no_labels.to_bytes(1))
+        
+        file.write((len(self.unresolved_labels)).to_bytes(4, byteorder="little"))
+        for lbl, term_sign in self.unresolved_labels:
+            file.write(lbl.encode("ascii"))
+            file.write(term_sign.to_bytes(4, byteorder="little"))
+        
+        file.write(self.offset.to_bytes(4, byteorder="little", signed=True))
+
+    @staticmethod
+    def from_file(file) -> LabelExpression:
+        # TODO read
+        return None
+
     def __repr__(self):
         s = "<"
         for i, (lbl, term_sign) in enumerate(self.unresolved_labels):
@@ -152,6 +169,8 @@ class LabelExpression:
 
 
 class ObjectCode:
+    VERSION = 1
+
     def __init__(self):
         # TODO offset?
         self.labels: dict[str, tuple[int, int]] = {} # (<LabelName>, (<obj offset>, <line_num>))
@@ -159,13 +178,56 @@ class ObjectCode:
         self.code_bytes: list[bytearray] = []
         self.obj_offset: int = 0
 
+    def write_to_file(self, file) -> None:
+        file.write(ObjectCode.VERSION.to_bytes(4, byteorder="little"))
+        file.write(self.obj_offset.to_bytes(4, byteorder="little"))
+
+        file.write((len(self.labels)).to_bytes(4, byteorder="little"))
+        for lbl, (offset, line_num) in self.labels.items():
+            file.write(lbl.encode("ascii"))
+            file.write(offset.to_bytes(4, byteorder="little"))
+            file.write(line_num.to_bytes(4, byteorder="little"))
+
+        file.write((len(self.offsets_to_resolve)).to_bytes(4, byteorder="little"))
+        for offset, lblexpr in self.offsets_to_resolve.items():
+            file.write(offset.to_bytes(4, byteorder="little"))
+            lblexpr.write_to_file(file)
+
+        file.write((len(self.code_bytes)).to_bytes(4, byteorder="little"))
+        for ba in self.code_bytes:
+            file.write((len(ba)).to_bytes(4, byteorder="little"))
+            file.write(ba)
+
+    @staticmethod
+    def from_file(file) -> ObjectCode:
+        # TODO
+        return None
 
 def main():
     # TODO other handling including help screen
     if len(sys.argv) < 2:
         raise Exception(f"Error: Must specify file to assemble")
-    path = Path(sys.argv[1])
-    assemble_obj_from_file(path)
+    in_id = sys.argv[1]
+    path = Path(in_id)
+    objcode = assemble_obj_from_file(path)
+
+    # TODO other arguments
+
+    obj_file_path = Path(f"{in_id}.o")
+    sep_idx = in_id.rfind('.')
+    if "-o" in sys.argv:
+        idx = sys.argv.index("-o")
+        if idx == len(sys.argv) - 1:
+            raise Exception(f"Error: Must specify object file name after '-o' option")
+        out_raw = sys.argv[idx+1]
+        if len(out_raw) == 0:
+            raise Exception(f"Error: Must specify object file name after '-o' option")
+        if out_raw[0] == '-':
+            raise Exception(f"Error: flag '-' found at start of object file name argument")
+        obj_file_path = Path(out_raw)
+    elif sep_idx != -1:
+        obj_file_path = Path(f"{in_id[:sep_idx]}.o")
+    write_obj_to_file(objcode, obj_file_path)
 
 def assemble_obj_from_file(path: Path) -> ObjectCode:
     if not path.is_file():
@@ -175,6 +237,12 @@ def assemble_obj_from_file(path: Path) -> ObjectCode:
         for line_num, line in enumerate(f, start=1):
             parse_asm_line(line_num, line, objcode)
     return objcode
+
+def write_obj_to_file(objcode: ObjectCode, path: Path) -> None:
+    if path.is_dir():
+        raise Exception(f"Error: path {path} is a directory")
+    with path.open(mode="wb") as f:
+        objcode.write_to_file(f)
 
 
 def parse_asm_line(line_num: int, line: str, objcode: ObjectCode) -> None:
