@@ -57,16 +57,16 @@ class LabelExpression:
     
     def write_to_file(self, file) -> None:
         file.write(self.addr_type.value.to_bytes(1))
-        utils6502.write_compressed_int(file, self.line_num)
+        utils.write_compressed_int(file, self.line_num)
         file.write(self.no_labels.to_bytes(1))
         
-        utils6502.write_compressed_int(file, len(self.unresolved_labels))
+        utils.write_compressed_int(file, len(self.unresolved_labels))
         for lbl, term_sign in self.unresolved_labels:
-            utils6502.write_compressed_int(file, len(lbl))
+            utils.write_compressed_int(file, len(lbl))
             file.write(lbl.encode("ascii"))
             file.write(term_sign.to_bytes(1, signed=True))
         
-        utils6502.write_compressed_int(file, self.offset, signed=True)
+        utils.write_compressed_int(file, self.offset, signed=True)
 
     @staticmethod
     def from_file(file) -> LabelExpression:
@@ -83,19 +83,19 @@ class LabelExpression:
             case _:
                 raise Exception(f"Error: Invalid label expression type")
 
-        line_num = utils6502.read_compressed_int(file)
+        line_num = utils.read_compressed_int(file)
 
         lblexpr = LabelExpression(addr_type, line_num)
         lblexpr.no_bytes = bool(int.from_bytes(file.read(1)))
 
-        ul_sz = utils6502.read_compressed_int(file)
+        ul_sz = utils.read_compressed_int(file)
         for _ in range(ul_sz):
-            lbl_sz = utils6502.read_compressed_int(file)
+            lbl_sz = utils.read_compressed_int(file)
             lbl = file.read(lbl_sz).decode("ascii")
             term_sign = int.from_bytes(file.read(1), signed=True)
             lblexpr.unresolved_labels.append((lbl, term_sign))
 
-        lblexpr.offset = utils6502.read_compressed_int(file, signed=True)
+        lblexpr.offset = utils.read_compressed_int(file, signed=True)
 
         return lblexpr
 
@@ -213,21 +213,21 @@ class ObjectCode:
         file.write(ObjectCode.VERSION.to_bytes(4, byteorder="little"))
         file.write(self.obj_offset.to_bytes(4, byteorder="little"))
 
-        utils6502.write_compressed_int(file, len(self.labels))
+        utils.write_compressed_int(file, len(self.labels))
         for lbl, (offset, line_num) in self.labels.items():
-            utils6502.write_compressed_int(file, len(lbl))
+            utils.write_compressed_int(file, len(lbl))
             file.write(lbl.encode("ascii"))
-            utils6502.write_compressed_int(file, offset)
-            utils6502.write_compressed_int(file, line_num)
+            utils.write_compressed_int(file, offset)
+            utils.write_compressed_int(file, line_num)
 
-        utils6502.write_compressed_int(file, len(self.offsets_to_resolve))
+        utils.write_compressed_int(file, len(self.offsets_to_resolve))
         for offset, lblexpr in self.offsets_to_resolve.items():
-            utils6502.write_compressed_int(file, offset)
+            utils.write_compressed_int(file, offset)
             lblexpr.write_to_file(file)
 
-        utils6502.write_compressed_int(file, len(self.code_bytes))
+        utils.write_compressed_int(file, len(self.code_bytes))
         for ba in self.code_bytes:
-            utils6502.write_compressed_int(file, len(ba))
+            utils.write_compressed_int(file, len(ba))
             file.write(ba)    
 
     @staticmethod
@@ -238,23 +238,23 @@ class ObjectCode:
         objcode = ObjectCode()
         objcode.obj_offset = int.from_bytes(file.read(4), byteorder="little")
         
-        labels_sz = utils6502.read_compressed_int(file)
+        labels_sz = utils.read_compressed_int(file)
         for _ in range(labels_sz):
-            lbl_sz = utils6502.read_compressed_int(file)
+            lbl_sz = utils.read_compressed_int(file)
             lbl = file.read(lbl_sz).decode("ascii")
-            offset = utils6502.read_compressed_int(file)
-            line_num = utils6502.read_compressed_int(file)
+            offset = utils.read_compressed_int(file)
+            line_num = utils.read_compressed_int(file)
             objcode.labels[lbl] = (offset, line_num)
 
-        otr_sz = utils6502.read_compressed_int(file)
+        otr_sz = utils.read_compressed_int(file)
         for _ in range(otr_sz):
-            offset = utils6502.read_compressed_int(file)
+            offset = utils.read_compressed_int(file)
             lblexpr = LabelExpression.from_file(file)
             objcode.offsets_to_resolve[offset] = lblexpr
 
-        cb_sz = utils6502.read_compressed_int(file)
+        cb_sz = utils.read_compressed_int(file)
         for _ in range(cb_sz):
-            ba_sz = utils6502.read_compressed_int(file)
+            ba_sz = utils.read_compressed_int(file)
             ba = bytearray(file.read(ba_sz))
             objcode.code_bytes.append(ba)
 
