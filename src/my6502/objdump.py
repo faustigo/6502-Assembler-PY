@@ -1,4 +1,4 @@
-from obj6502 import ObjectCode
+from my6502.obj import ObjectCode
 
 def output_obj(objcode: ObjectCode) -> None:
     # Create map of label_num => label str

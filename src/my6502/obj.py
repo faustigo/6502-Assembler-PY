@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 from enum import Enum
 
-import utils6502
+import my6502.utils as utils
 
 """
 This file creates object files after parsing assembly files.
